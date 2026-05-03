@@ -1,158 +1,96 @@
-import json
 import argparse
 from pathlib import Path
 
-from model import embed_2d, encode
+import chromadb
+from flask import Flask, abort, render_template
 
-REFERENCE_WORDS = ["muerte", "vida", "conciencia", "entendimiento"]
+from config.constants import COLLECTION_NAME, DEFAULT_DB_PATH
+from render import obsidian
 
 
-def visualize_document(path: Path):
-    with open(path) as f:
-        payload = f.read()
+app = Flask(__name__)
+root_dir: Path = Path(".")
+collection = None  # set in __main__
 
-    sentences = [s.strip() for s in payload.split(". ") if s.strip()]
-    all_items = sentences + REFERENCE_WORDS
 
-    vectors = encode(all_items)
-    coords = embed_2d(vectors)
+@app.route("/")
+def index():
+    paths, _ = _all_paths_and_stems()
+    tree = build_tree(paths)
+    return render_template("index.html", tree=tree)
 
+
+@app.route("/visualize/<path:filepath>")
+def visualize(filepath):
+    res = collection.get(
+        where={"path": filepath},
+        include=["documents", "metadatas"],
+    )
+    if not res["ids"]:
+        abort(404)
+
+    rows = sorted(
+        zip(res["documents"], res["metadatas"]),
+        key=lambda dm: dm[1]["chunk_idx"],
+    )
     points = [
         {
-            "text": item,
-            "x": float(coords[i, 0]),
-            "y": float(coords[i, 1]),
-            "is_reference": i >= len(sentences),
+            "text": doc,
+            "x": meta["tsne_x"],
+            "y": meta["tsne_y"],
+            "block_indices": [int(b) for b in meta["block_indices"].split(",") if b],
         }
-        for i, item in enumerate(all_items)
+        for doc, meta in rows
     ]
 
-    out = path.with_suffix(".html")
-    out.write_text(_build_html(sentences, points))
-    print(f"Saved: {out}")
+    target = root_dir / filepath
+    if not target.is_file():
+        abort(404)
+    fm, blocks = obsidian.parse(target.read_text())
 
+    _, stem_map = _all_paths_and_stems()
+    html = obsidian.to_html(fm, blocks, lambda t: stem_map.get(t))
 
-def _build_html(sentences, points):
-    data_json = json.dumps(points)
-    sentence_spans = "\n".join(
-        f'<span class="sentence" data-index="{i}">{s}.</span>'
-        for i, s in enumerate(sentences)
+    return render_template(
+        "visualize.html",
+        filename=filepath,
+        content_html=html,
+        points=points,
     )
 
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Sentence Embeddings</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ display: flex; height: 100vh; font-family: system-ui, sans-serif; background: #fafafa; }}
 
-  #text-panel {{
-    width: 40%;
-    padding: 28px 24px;
-    overflow-y: auto;
-    border-right: 1px solid #e0e0e0;
-    background: #fff;
-    font-size: 15px;
-    line-height: 1.9;
-    color: #222;
-  }}
+def _all_paths_and_stems() -> tuple[list[str], dict[str, str]]:
+    res = collection.get(include=["metadatas"])
+    paths: set[str] = set()
+    stem_map: dict[str, str] = {}
+    for meta in res["metadatas"]:
+        path = meta["path"]
+        paths.add(path)
+        stem_map.setdefault(meta["stem"], path)
+    return sorted(paths), stem_map
 
-  .sentence {{
-    cursor: default;
-    border-radius: 3px;
-    padding: 1px 2px;
-    transition: background 0.12s;
-  }}
-  .sentence:hover {{ background: #ffe082; }}
-  .sentence.active  {{ background: #ffb300; color: #000; }}
 
-  #chart-panel {{ flex: 1; position: relative; }}
-  #chart {{ width: 100%; height: 100%; }}
-</style>
-</head>
-<body>
-
-<div id="text-panel">{sentence_spans}</div>
-<div id="chart-panel"><div id="chart"></div></div>
-
-<script>
-const POINTS = {data_json};
-const nSentences = POINTS.filter(p => !p.is_reference).length;
-
-const DEFAULT_COLOR    = '#5b9bd5';
-const HIGHLIGHT_COLOR  = '#e74c3c';
-const REF_COLOR        = '#aaaaaa';
-
-function colorArray(activeIdx) {{
-  return POINTS.map((p, i) => {{
-    if (p.is_reference) return REF_COLOR;
-    return (i === activeIdx) ? HIGHLIGHT_COLOR : DEFAULT_COLOR;
-  }});
-}}
-
-const trace = {{
-  x: POINTS.map(p => p.x),
-  y: POINTS.map(p => p.y),
-  mode: 'markers',
-  type: 'scatter',
-  text: POINTS.map(p => p.text),
-  hoverinfo: 'text',
-  marker: {{
-    color: colorArray(-1),
-    size: POINTS.map(p => p.is_reference ? 11 : 7),
-    line: {{ width: 0 }},
-  }},
-}};
-
-const layout = {{
-  margin: {{ t: 16, r: 16, b: 16, l: 16 }},
-  paper_bgcolor: '#fafafa',
-  plot_bgcolor:  '#fafafa',
-  xaxis: {{ showgrid: false, zeroline: false, showticklabels: false }},
-  yaxis: {{ showgrid: false, zeroline: false, showticklabels: false }},
-  hovermode: 'closest',
-}};
-
-Plotly.newPlot('chart', [trace], layout, {{ responsive: true }});
-
-const chartDiv  = document.getElementById('chart');
-const sentenceEls = Array.from(document.querySelectorAll('.sentence'));
-
-function clearActive() {{
-  sentenceEls.forEach(el => el.classList.remove('active'));
-}}
-
-// Chart hover -> highlight sentence
-chartDiv.on('plotly_hover', (evt) => {{
-  const idx = evt.points[0].pointIndex;
-  if (POINTS[idx].is_reference) return;
-  clearActive();
-  sentenceEls[idx].classList.add('active');
-  sentenceEls[idx].scrollIntoView({{ block: 'nearest', behavior: 'smooth' }});
-}});
-
-chartDiv.on('plotly_unhover', () => clearActive());
-
-// Sentence hover -> highlight point on chart
-sentenceEls.forEach((el, i) => {{
-  el.addEventListener('mouseenter', () => {{
-    Plotly.restyle('chart', {{ 'marker.color': [colorArray(i)] }}, [0]);
-  }});
-  el.addEventListener('mouseleave', () => {{
-    Plotly.restyle('chart', {{ 'marker.color': [colorArray(-1)] }}, [0]);
-  }});
-}});
-</script>
-
-</body>
-</html>"""
+def build_tree(paths: list[str]) -> dict:
+    """Build a nested {dirs: {name: subtree}, files: [(name, full_path)]} tree."""
+    root = {"dirs": {}, "files": []}
+    for p in paths:
+        parts = p.split("/")
+        node = root
+        for d in parts[:-1]:
+            node = node["dirs"].setdefault(d, {"dirs": {}, "files": []})
+        node["files"].append((parts[-1], p))
+    return root
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", help="Path to the text file to visualize")
+    ap.add_argument("directory", help="Directory containing .md files")
+    ap.add_argument("--db-path", dest="db_path", type=Path, default=Path(DEFAULT_DB_PATH))
+    ap.add_argument("--port", type=int, default=5000)
     args = ap.parse_args()
-    visualize_document(Path(args.path))
+
+    root_dir = Path(args.directory).resolve()
+    client = chromadb.PersistentClient(path=str(args.db_path))
+    collection = client.get_collection(COLLECTION_NAME)
+
+    app.run(debug=True, port=args.port)

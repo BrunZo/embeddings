@@ -1,3 +1,7 @@
 sentence-transformers
 scikit-learn
 matplotlib
+flask
+pyyaml
+chromadb
+python-dotenv

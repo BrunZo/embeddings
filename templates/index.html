@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sentence Embeddings</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, sans-serif;
+    background: #fafafa;
+    display: flex;
+    justify-content: center;
+    padding: 48px 24px;
+  }
+  .container { max-width: 600px; width: 100%; }
+  h1 { font-size: 22px; margin-bottom: 24px; color: #222; }
+  ul { list-style: none; padding-left: 18px; }
+  li { margin: 4px 0; font-size: 15px; }
+  a { color: #5b9bd5; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  details { margin: 4px 0; }
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #444;
+    padding: 2px 0;
+    user-select: none;
+  }
+  summary:hover { color: #222; }
+  details ul { padding-left: 18px; }
+  details details { margin-left: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Documents</h1>
+
+  {% macro render_node(node) -%}
+    {% for name, sub in node.dirs.items() | sort %}
+      <details open>
+        <summary>{{ name }}/</summary>
+        {{ render_node(sub) }}
+      </details>
+    {% endfor %}
+    {% if node.files %}
+      <ul>
+      {% for basename, path in node.files %}
+        <li><a href="/visualize/{{ path }}">{{ basename }}</a></li>
+      {% endfor %}
+      </ul>
+    {% endif %}
+  {%- endmacro %}
+
+  {{ render_node(tree) }}
+</div>
+</body>
+</html>
