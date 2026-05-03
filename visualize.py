@@ -2,9 +2,10 @@ import argparse
 from pathlib import Path
 
 import chromadb
-from flask import Flask, abort, render_template
+from flask import Flask, abort, render_template, request
 
 from config.constants import COLLECTION_NAME, DEFAULT_DB_PATH
+from embedding.query import retrieve
 from render import obsidian
 
 
@@ -18,6 +19,17 @@ def index():
     paths, _ = _all_paths_and_stems()
     tree = build_tree(paths)
     return render_template("index.html", tree=tree)
+
+
+@app.route("/search", methods=["GET", "POST"])
+def search():
+    results = []
+    query = ""
+    if request.method == "POST":
+        query = request.form.get("q", "").strip()
+        if query:
+            results = retrieve(query, 10, collection)
+    return render_template("search.html", query=query, results=results)
 
 
 @app.route("/visualize/<path:filepath>")
